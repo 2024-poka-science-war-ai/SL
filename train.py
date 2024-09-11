@@ -102,11 +102,11 @@ def train_loop(dataloader, model, loss_fn, optimizer, epoch, epochs, scheduler=N
         opt_act.step()
         opt_crt.step()
 
-        actor_cum_loss += actor_loss.item()
-        critic_cum_loss += critic_loss.item()
+        actor_cum_loss = actor_loss.item()
+        critic_cum_loss = critic_loss.item()
         
         freq = 1000
-        pbar.set_postfix({"Actor Loss": round(actor_cum_loss/(batch%freq+1), 8), "Critic Loss": round(critic_cum_loss/(batch%freq+1), 8)})
+        pbar.set_postfix({"Actor Loss": round(actor_cum_loss, 8), "Critic Loss": round(critic_cum_loss, 8)})
         pbar.update(1)
         if batch % freq == freq-1:
             wandb.log({"Training Actor Loss" : actor_cum_loss/freq, "Training Critic Loss": critic_cum_loss/freq})
@@ -124,7 +124,7 @@ def train_loop(dataloader, model, loss_fn, optimizer, epoch, epochs, scheduler=N
     if epoch % 10 == 0:
         gc.collect()
     pbar.close()
-
+    return actor, critic
 
 from sklearn.metrics import accuracy_score
 from collections import defaultdict
@@ -302,7 +302,8 @@ def get_ckpts():
             ckpt_dict[epoch].append(ckpt)
         else:
             ckpt_dict[epoch] = [ckpt]
-
+    if len(ckpt_dict.keys()) == 0:
+        return None, None
     resume_epoch = max(ckpt_dict.keys())
     resume_ckpts = ckpt_dict[resume_epoch]
     return resume_epoch, sorted(resume_ckpts)
@@ -384,15 +385,20 @@ if __name__ == "__main__":
     if start_epoch is not None:
         actor.load_state_dict(torch.load(f"./models/{ckpts[0]}"))
         critic.load_state_dict(torch.load(f"./models/{ckpts[1]}"))
+        for _ in range(1446*start_epoch):
+            sch_act.step()
+            sch_crt.step()
+        print(ckpts)
     acc_max = 0
-    start_epoch = 0 if start_epoch is None else start_epoch
+    start_epoch = 0 if start_epoch is None else start_epoch+1
+    # import pdb;pdb.set_trace()
     for t in range(start_epoch, epochs):
         if t != 0:
-            train_loop(train_dataloader, (actor, critic), loss_fn, (opt_act, opt_crt), epoch=t, epochs = epochs, scheduler=(sch_act, sch_crt))
-            torch.cuda.empty_cache()
+            actor, critic = train_loop(train_dataloader, (actor, critic), loss_fn, (opt_act, opt_crt), epoch=t, epochs = epochs, scheduler=(sch_act, sch_crt))
+            # torch.cuda.empty_cache()
         if test_dataloader is not None:
             button_metrics = test_loop(test_dataloader, (actor, critic), t, device)
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
         # if acc > acc_max:
         #     print(f"Updating via acc {acc} at epoch {t+1}.")
         torch.save(actor.state_dict(), f"./models/{model_name}_epoch{t}_actor.pt")
