@@ -35,11 +35,17 @@ class SlippiDataset(Dataset):
         self.seq_len = config.seq_len
         
         for mm in mm_list[:-1]:
-            n_elem = (mm.shape[0] // config.seq_len) + (mm.shape[0]%config.seq_len!=0) ## full data 개수 + padding 있는거 개수
+            if config.duplicate_ok:
+                n_elem = mm.shape[0]
+            else:
+                n_elem = (mm.shape[0] // config.seq_len) + (mm.shape[0]%config.seq_len!=0) ## full data 개수 + padding 있는거 개수
             self.start_indices.append(self.start_indices[-1] + n_elem)
             self.total_len += n_elem
         self.start_indices = torch.tensor(self.start_indices).detach()
-        self.total_len += (mm_list[-1].shape[0] // config.seq_len) + (mm_list[-1].shape[0]%config.seq_len!=0)
+        if config.duplicate_ok:
+            self.total_len += mm_list[-1].shape[0]
+        else:
+            self.total_len += (mm_list[-1].shape[0] // config.seq_len) + (mm_list[-1].shape[0]%config.seq_len!=0)
         del mm_list
         
     def get_mm_file_names(self):
@@ -55,21 +61,24 @@ class SlippiDataset(Dataset):
         target_game_id = np.arange(len(self.start_indices))[index >= self.start_indices][-1]
         filename, player_id = self.mm_file_list[target_game_id]
         with open_memmap(filename) as target_game:
-            start_idx = (index - self.start_indices[target_game_id]) * self.config.seq_len
+            if self.config.duplicate_ok:
+                start_idx = (index - self.start_indices[target_game_id])
+            else:
+                start_idx = (index - self.start_indices[target_game_id]) * self.config.seq_len
             end_idx = min(start_idx + self.seq_len, len(target_game))
             if (end_idx - start_idx) < self.seq_len:  # add padding
-                # import pdb;pdb.set_trace()
+                
                 padding = np.zeros((self.seq_len - (end_idx - start_idx), target_game.shape[1]), dtype=target_game.dtype)
                 final_mm = np.concatenate([target_game[start_idx:end_idx], padding], axis=0)
                 del padding
             else:
                 final_mm = target_game[start_idx:end_idx]
             
-            temp = torch.from_numpy(final_mm)
-            if player_id == 0:
-                return temp[:, :960], temp[:, 1922].reshape(-1, 1), temp[:, 1920].reshape(-1, 1) 
-            else:
-                return temp[:, 960:1920], temp[:, 1923].reshape(-1, 1), temp[:, 1921].reshape(-1, 1) 
+        temp = torch.from_numpy(final_mm)
+        if player_id == 0:
+            return temp[:, :960], temp[:, 1922].reshape(-1, 1), temp[:, 1920].reshape(-1, 1) 
+        else:
+            return temp[:, 960:1920], temp[:, 1923].reshape(-1, 1), temp[:, 1921].reshape(-1, 1) 
         
     
 

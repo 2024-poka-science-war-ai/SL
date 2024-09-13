@@ -18,7 +18,7 @@ os.environ["WANDB_DISABLED"] = "false"
 hidden_size = 256
 
 D = 0
-freq = 1000
+freq = 100
 
 
 def train_loop(dataloader, model, optimizer, epoch, epochs, scheduler=None):
@@ -54,11 +54,10 @@ def train_loop(dataloader, model, optimizer, epoch, epochs, scheduler=None):
         # critic 
         with torch.no_grad():
             V_, _ = target_net(torch.permute(X[:,1:SEQ_LEN+1,:].float().to(device), (1, 0, 2)), init_state)
-            target = V_.permute(1, 0, 2).float() + R[:, SEQ_LEN, 0].float()
+            target = V_.permute(1, 0, 2).float().squeeze() + R[:, :SEQ_LEN, 0].float()
             target = target[:,SEQ_LEN-1]
         V, _ = critic(torch.permute(X[:,:SEQ_LEN,:].float(), (1, 0, 2)), init_state)
-        value_pred = V[SEQ_LEN-1, :].float()
-
+        value_pred = V[SEQ_LEN-1, :].float().squeeze()
         critic_loss = mse(value_pred, target)
         
         # 역전파
@@ -75,10 +74,11 @@ def train_loop(dataloader, model, optimizer, epoch, epochs, scheduler=None):
         critic_cum_loss = critic_loss.item()
         
 
-        pbar.set_postfix({"Actor Loss": round(actor_cum_loss, 8), "Critic Loss": round(critic_cum_loss, 8)})
-        pbar.update(1)
+        
         if batch % freq == freq-1:
-            wandb.log({"Training Actor Loss" : actor_cum_loss/freq, "Training Critic Loss": critic_cum_loss/freq})
+            wandb.log({"Training Actor Loss" : actor_cum_loss, "Training Critic Loss": critic_cum_loss})
+            pbar.set_postfix({"Actor Loss": round(actor_cum_loss, 8), "Critic Loss": round(critic_cum_loss, 8)})
+            pbar.update(min(freq, data_size - batch))
             
             actor_cum_loss = 0
             critic_cum_loss = 0
@@ -86,7 +86,7 @@ def train_loop(dataloader, model, optimizer, epoch, epochs, scheduler=None):
         
         
         sch_act.step()
-        sch_crt.step()
+        # sch_crt.step()
     pbar.close()
     return actor, critic
 
@@ -259,9 +259,9 @@ def get_ckpts():
     ckpts = os.listdir("./models")
     ckpt_dict = dict()
     for ckpt in ckpts:
-        if not ckpt.startswith("test1") or not ckpt.endswith(".pt"):
+        if not ckpt.startswith("LINK") or not ckpt.endswith(".pt"):
             continue
-        epoch = int(ckpt.split("_")[1][5:])
+        epoch = int(ckpt.split("_")[2][5:])
         if epoch in ckpt_dict.keys():
             ckpt_dict[epoch].append(ckpt)
         else:
@@ -321,7 +321,7 @@ def load_data(config: DatasetConfig, train_ratio=1.):
 
 if __name__ == "__main__":
     USE_CUDA = torch.cuda.is_available()
-    device = torch.device('cuda:0' if USE_CUDA else 'cpu')
+    device = torch.device('cuda:1' if USE_CUDA else 'cpu')
     if (USE_CUDA == False):
         print("CUDA NOT AVAILABLE, WOULD YOU CONTINUE?(y if yes, n if no)")
         command = ""
@@ -372,12 +372,12 @@ if __name__ == "__main__":
     sch_crt = lr_scheduler.CosineAnnealingLR(opt_crt, T_max=30000)
     
     import time
-    model_name = "test1"# time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime(time.time()))
+    model_name = "LINK_test1"# time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime(time.time()))
     
     wandb.init(
         # set the wandb project where this run will be logged
         project="melee_sl",
-        id="swtlpo86",
+        # id="swtlpo86",
         # track hyperparameters and run metadata
         config={
             "learning_rate": learning_rate,
@@ -393,10 +393,10 @@ if __name__ == "__main__":
     if start_epoch is not None:
         actor.load_state_dict(torch.load(f"./models/{ckpts[0]}"))
         critic.load_state_dict(torch.load(f"./models/{ckpts[1]}"))
-        for _ in range(1446*start_epoch):
+        for _ in range(3267*start_epoch):
             sch_act.step()
-            sch_crt.step()
-        print(ckpts)
+        #     sch_crt.step()
+        # print(ckpts)
     start_epoch = 0 if start_epoch is None else start_epoch+1
     for t in range(start_epoch, epochs):
         if t != 0:
