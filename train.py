@@ -14,11 +14,12 @@ from nn_list import *
 import wandb
 import gc
 import os
-os.environ["WANDB_DISABLED"] = "true"
+os.environ["WANDB_DISABLED"] = "false"
 hidden_size = 256
 
 D = 0
 freq = 1000
+
 
 def train_loop(dataloader, model, optimizer, epoch, epochs, scheduler=None):
     actor, critic = model
@@ -34,10 +35,10 @@ def train_loop(dataloader, model, optimizer, epoch, epochs, scheduler=None):
     actor_cum_loss = 0
     critic_cum_loss = 0
     
-    target_net = DeepResLSTMCritic(hidden_size, input_size, 3).to(device)
+    target_net = DeepResLSTMCritic(hidden_size, input_size, 2)
     target_net.load_state_dict(critic.state_dict())
     target_net.eval()
-    
+    target_net = target_net.to(device)
     actor.train()
     critic.train()
     for batch, data in enumerate(dataloader):
@@ -47,16 +48,16 @@ def train_loop(dataloader, model, optimizer, epoch, epochs, scheduler=None):
         
         init_state = actor.initial_state(X.shape[0], device)
 
-        action_output, state = actor(torch.permute(torch.concat([X[:,:SEQ_LEN,:], y[:,D:D+SEQ_LEN,:]], axis=2).float(), (1, 0, 2)), init_state)
-
-        actor_loss = ce(action_output.permute(1, 0, 2)[:, -1], y[:,D+SEQ_LEN,:])
+        action_output, state = actor(torch.permute(X[:,:SEQ_LEN,:], (1, 0, 2)), init_state)
+        actor_loss = ce(action_output.permute(1, 0, 2)[:, -1], y[:,D+SEQ_LEN,0].type(torch.LongTensor).to(device))
         
         # critic 
         with torch.no_grad():
-            V_, _ = target_net(torch.permute(X[:,SEQ_LEN,:].float(), (1, 0, 2)), init_state)
-            target = V_.permute(1, 0, 2).reshape(-1, 1).float() + R[:, D+SEQ_LEN].reshape(-1, 1).float()
-        V, _ = critic(torch.permute(X[:,SEQ_LEN-1,:].float(), (1, 0, 2)), init_state)   
-        value_pred = V.permute(1, 0, 2).reshape(-1, 1).float()
+            V_, _ = target_net(torch.permute(X[:,1:SEQ_LEN+1,:].float().to(device), (1, 0, 2)), init_state)
+            target = V_.permute(1, 0, 2).float() + R[:, SEQ_LEN, 0].float()
+            target = target[:,SEQ_LEN-1]
+        V, _ = critic(torch.permute(X[:,:SEQ_LEN,:].float(), (1, 0, 2)), init_state)
+        value_pred = V[SEQ_LEN-1, :].float()
 
         critic_loss = mse(value_pred, target)
         
@@ -272,9 +273,55 @@ def get_ckpts():
     return resume_epoch, sorted(resume_ckpts)
 
 
+import random
+
+def load_data(config: DatasetConfig, train_ratio=1.):
+    ## define train episode and validation episode
+    if config.agent_name is not None:
+        import json
+        with open(os.path.join(config.basepath, "processed_replays.json"), "r") as f:
+            data = json.load(f)
+        total_datafile = []
+        ## concat all maps
+        for map in data[config.agent_name].keys():
+            for i in data[config.agent_name][map]["0"]:
+                total_datafile.append((i, 0))
+            for i in data[config.agent_name][map]["1"]:
+                total_datafile.append((i, 1))
+            
+    else:
+        total_datafile = [os.path.join(config.basepath, name) for name in os.listdir(config.basepath) if name.endswith(".dat")]
+    train_episodes = (random.sample(total_datafile, k=int(train_ratio*len(total_datafile))))
+    val_episodes = (list(set(total_datafile) - set(train_episodes)))
+
+    train_dataset = SlippiDataset(config=config, mm_filelist=train_episodes)
+    train_dataloader = DataLoader(
+        train_dataset, 
+        batch_size=config.batch_size, 
+        shuffle=True,  
+        pin_memory=True, 
+        drop_last=True, 
+        num_workers=config.num_workers
+    )
+    if len(val_episodes) == 0:
+        val_dataloader = None
+    else:
+        val_dataset = SlippiDataset(config=config, mm_filelist=val_episodes)
+        val_dataloader = DataLoader(
+            val_dataset, 
+            batch_size=config.batch_size, 
+            shuffle=False,
+            pin_memory=True,
+            drop_last=True, 
+            num_workers=config.num_workers
+        )
+    return train_dataloader, val_dataloader
+
+
+
 if __name__ == "__main__":
     USE_CUDA = torch.cuda.is_available()
-    device = torch.device('cuda:1' if USE_CUDA else 'cpu')
+    device = torch.device('cuda:0' if USE_CUDA else 'cpu')
     if (USE_CUDA == False):
         print("CUDA NOT AVAILABLE, WOULD YOU CONTINUE?(y if yes, n if no)")
         command = ""
@@ -290,27 +337,27 @@ if __name__ == "__main__":
     train_ratio = 1.
     throw_away_ratio = 0.
     batch_size = 1024
-    config = DatasetConfig(dataset_basepath="/root/multi_purpose/slp_full_data/sample", seq_len=SEQ_LEN+D+1)
-    dataset = SlippiDataset(config)
     
-    throw_away_size = int(len(dataset) * throw_away_ratio)
-    train_size = int(train_ratio * (len(dataset)-throw_away_size))
-    test_size = len(dataset)-throw_away_size - train_size
-    if test_size != 0:
-        train_dataset, test_dataset, _ = random_split(dataset, [train_size, test_size, throw_away_size])
-    else:
-        train_dataset = dataset
-        test_dataset = None
-    print(f"train size: {train_size}, test size: {test_size}")
+    config = DatasetConfig()
+    train_dataloader, test_dataloader = load_data(config)
+    # throw_away_size = int(len(dataset) * throw_away_ratio)
+    # train_size = int(train_ratio * (len(dataset)-throw_away_size))
+    # test_size = len(dataset)-throw_away_size - train_size
+    # if test_size != 0:
+    #     train_dataset, test_dataset, _ = random_split(dataset, [train_size, test_size, throw_away_size])
+    # else:
+    #     train_dataset = dataset
+    #     test_dataset = None
+    # print(f"train size: {train_size}, test size: {test_size}")
 
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,  pin_memory=True, num_workers=3)
-    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=3) if test_dataset is not None else None
-    x, _, _ = train_dataset[10]
-    output_size = 8 # ABXYZ, main, c, trigger
-    input_size = x.shape[1] + output_size
+    # train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,  pin_memory=True, num_workers=3)
+    # test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=3) if test_dataset is not None else None
+    # x, _, _ = train_dataset[10]
+    # output_size = 8 # ABXYZ, main, c, trigger
+    input_size = 960
     
-    actor = DeepResLSTMActor(hidden_size, input_size, 3).to(device)
-    critic = DeepResLSTMCritic(hidden_size, input_size, 3).to(device)
+    actor = DeepResLSTMActor(hidden_size, input_size, 2).to(device)
+    critic = DeepResLSTMCritic(hidden_size, input_size, 2).to(device)
     
     print(f"Using {device} to train")
     epochs = 300

@@ -24,24 +24,26 @@ def open_memmap(mem_file_name):
 TIME_LIST = [[], [], []]
 
 class SlippiDataset(Dataset):
-    def __init__(self, config:DatasetConfig):
+    def __init__(self, config:DatasetConfig, mm_filelist=None):
+        assert mm_filelist is not None
         self.config = config
-        self.mm_list = [read_memmap(file) for file in self.get_mm_file_names()]
-        self.mm_file_list = [file for file in self.get_mm_file_names()]
+        self.mm_file_list = self.get_mm_file_names() if mm_filelist is None else mm_filelist
+        mm_list = [read_memmap(file) for file, _ in self.mm_file_list]
+        
         self.start_indices = [0]
         self.total_len = 0
         self.seq_len = config.seq_len
         
-        for mm in self.mm_list[:-1]:
+        for mm in mm_list[:-1]:
             n_elem = (mm.shape[0] // config.seq_len) + (mm.shape[0]%config.seq_len!=0) ## full data 개수 + padding 있는거 개수
             self.start_indices.append(self.start_indices[-1] + n_elem)
             self.total_len += n_elem
         self.start_indices = torch.tensor(self.start_indices).detach()
-        self.total_len += (self.mm_list[-1].shape[0] // config.seq_len) + (self.mm_list[-1].shape[0]%config.seq_len!=0)
-        del self.mm_list
+        self.total_len += (mm_list[-1].shape[0] // config.seq_len) + (mm_list[-1].shape[0]%config.seq_len!=0)
+        del mm_list
         
     def get_mm_file_names(self):
-        mm_base_path = self.config.dataset_basepath
+        mm_base_path = self.config.basepath
         mm_file_names = []
         for file_name in os.listdir(mm_base_path):
             if file_name.endswith("dat"):
@@ -51,7 +53,8 @@ class SlippiDataset(Dataset):
         return self.total_len
     def __getitem__(self, index):
         target_game_id = np.arange(len(self.start_indices))[index >= self.start_indices][-1]
-        with open_memmap(self.mm_file_list[target_game_id]) as target_game:
+        filename, player_id = self.mm_file_list[target_game_id]
+        with open_memmap(filename) as target_game:
             start_idx = (index - self.start_indices[target_game_id]) * self.config.seq_len
             end_idx = min(start_idx + self.seq_len, len(target_game))
             if (end_idx - start_idx) < self.seq_len:  # add padding
@@ -63,8 +66,10 @@ class SlippiDataset(Dataset):
                 final_mm = target_game[start_idx:end_idx]
             
             temp = torch.from_numpy(final_mm)
-            
-            return temp[:, :49], temp[:, 100:108], temp[:, 98].reshape(-1, 1)
+            if player_id == 0:
+                return temp[:, :960], temp[:, 1922].reshape(-1, 1), temp[:, 1920].reshape(-1, 1) 
+            else:
+                return temp[:, 960:1920], temp[:, 1923].reshape(-1, 1), temp[:, 1921].reshape(-1, 1) 
         
     
 
